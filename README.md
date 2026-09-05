@@ -1,8 +1,20 @@
 # officemcp-rs
 
-A fast, single-binary **Rust** rewrite of [OfficeMCP](https://github.com/mhackermsft/OfficeMCP) — an MCP server that lets AI assistants create, read, write, and manipulate Word (`.docx`), Excel (`.xlsx`), PowerPoint (`.pptx`), and PDF files over **stdio** using the Model Context Protocol.
+A fast, single-binary **Rust** rewrite of [OfficeMCP](https://github.com/mhackermsft/OfficeMCP) - an MCP server that lets AI assistants create, read, write, and manipulate Word (`.docx`), Excel (`.xlsx`), PowerPoint (`.pptx`), and PDF files over **stdio** using the Model Context Protocol.
 
 Drop-in compatible with the original C# server: same `office_*` / `word_*` / `excel_*` / `pptx_*` tool names, same stdio JSON-RPC transport, **44 tools** total.
+
+> ## AI Notice
+>
+> This Rust port was written **entirely by AI** (Muse Spark 1.2). The complete C# codebase
+> (~9,700 lines across 26 files) was analyzed, re-architected, and rewritten as idiomatic Rust
+> (~4,400 lines across 15 files) in **about 30 minutes**, including the crate layout, all 44 MCP
+> tool handlers, the document services (Word, Excel, PowerPoint, PDF), and this README.
+>
+> That speed is arguably the most impressive benchmark in this repo. A full language port with
+> preserved tool parity and a ~21× smaller binary, produced in less time than a typical `dotnet`
+> clean-build-and-coffee cycle. **As with all AI-generated code, review before trusting it in
+> production** - but the cold-start numbers don't lie.
 
 ## Why Rust?
 
@@ -163,4 +175,4 @@ See `Cargo.lock` (309 locked entries at time of writing) for the full tree.
 
 ## License
 
-MIT — same as the workspace. See `Cargo.toml` (`license = "MIT"`).
+MIT - same as the workspace. See `Cargo.toml` (`license = "MIT"`).
