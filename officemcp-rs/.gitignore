@@ -1,0 +1,11 @@
+# Rust build output
+/target/
+# NOTE: Cargo.lock is intentionally TRACKED for this binary crate
+# so releases are reproducible.
+
+# Editor / OS
+.vscode/
+.idea/
+*.swp
+.DS_Store
+Thumbs.db
