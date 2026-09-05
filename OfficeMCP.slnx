@@ -1,4 +1,0 @@
-<Solution>
-  <Project Path="OfficeMCP.Tests/OfficeMCP.Tests.csproj" />
-  <Project Path="OfficeMCP/OfficeMCP.csproj" />
-</Solution>

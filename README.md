@@ -1,248 +1,166 @@
-# OfficeMCP
+# officemcp-rs
 
-A [Model Context Protocol (MCP)](https://modelcontextprotocol.io/) server that enables AI assistants to create, read, write, and manipulate Microsoft Office documents (Word, Excel, PowerPoint) and PDFs directly from natural language instructions.
+A fast, single-binary **Rust** rewrite of [OfficeMCP](https://github.com/mhackermsft/OfficeMCP) — an MCP server that lets AI assistants create, read, write, and manipulate Word (`.docx`), Excel (`.xlsx`), PowerPoint (`.pptx`), and PDF files over **stdio** using the Model Context Protocol.
 
-## Features
+Drop-in compatible with the original C# server: same `office_*` / `word_*` / `excel_*` / `pptx_*` tool names, same stdio JSON-RPC transport, **44 tools** total.
 
-- **Format-agnostic tools** — unified `office_*` API works across all supported formats
-- **Format-specific tools** — granular `word_*`, `excel_*`, and `pptx_*` tools for advanced operations
-- **Markdown support** — write Word/PDF content using plain Markdown
-- **Batch operations** — perform multiple document operations in a single tool call
-- **PDF support** — create, read, watermark, and extract pages from PDFs
-- **Encrypted document handling** — detection and support for protected Office files
-- **Progressive tool disclosure** — tiered tool exposure keeps context lean
-- **Image creation** — embed images in Word, PowerPoint, and Excel documents
-- **Image extraction** — extract all embedded images from Word, PowerPoint, and PDF files as base64 data with MIME type for direct AI vision analysis (OCR, captioning)
-- **Rich document reading** — `office_read` on `.docx` returns an ordered content list of headings, paragraphs, tables, and inline images in document sequence, preserving section context around every image
+## Why Rust?
 
-## Supported Formats
+| | Original (C# / .NET 10) | This port (Rust) |
+|---|---|---|
+| Runtime requirement | .NET 10 SDK or shared runtime (~90 MB+) | **None** — static single binary |
+| Ship size (measured) | `publish/` ≈ **96 MB** (2 files), `OfficeMCP/bin` ≈ **129 MB** (328 files) | `target/release/officemcp-rs.exe` ≈ **4.6 MB** (~21× smaller than publish output) |
+| Startup (measured) | `dotnet run` = seconds (JIT + SDK); self-contained exe ≈ hundreds of ms | **~50 ms** for process spawn + `initialize` + `tools/list` (this machine, release build) |
+| Memory / GC | .NET GC, JIT code cache | No GC, no JIT — flat RSS, no pauses |
+| Cross-compile | `dotnet publish -r <rid>` per platform | `cargo build --release --target <triple>` — Linux / macOS / Windows from one codebase |
+| Source size | ~9,700 LOC across 26 `.cs` files | ~4,400 LOC across 15 `.rs` files |
 
-| Format | Extension | Read | Write | Create | Convert |
-|--------|-----------|------|-------|--------|---------|
-| Word | `.docx` | ✅ | ✅ | ✅ | ✅ |
-| Excel | `.xlsx` | ✅ | ✅ | ✅ | — |
-| PowerPoint | `.pptx` | ✅ | ✅ | ✅ | — |
-| PDF | `.pdf` | ✅ | ✅ | ✅ | ✅ |
-| Markdown | `.md` | — | — | — | ✅ |
+> Numbers above were measured in this repo: Rust binary weighed with `Get-ChildItem target/release/officemcp-rs.exe` (4,819,456 bytes), .NET output with `Measure-Object` over `publish/` and `OfficeMCP/bin`, cold-start timed by piping `initialize` + `tools/list` into the release binary. Your numbers will vary by platform and toolchain, but the order of magnitude holds.
 
-## Prerequisites
+### Performance notes
 
-- [.NET 10 SDK](https://dotnet.microsoft.com/download/dotnet/10.0)
-- An MCP-compatible client (e.g., Claude Desktop, VS Code with Copilot)
+- **Release profile is tuned for size *and* speed:** `opt-level = "z"`, `lto = "thin"`, `codegen-units = 1`, `panic = "abort"`, `strip = true` (see `Cargo.toml`). Result: a ~4.6 MB binary with no debug symbols and monomorphized hot paths.
+- **No async framework tax on the document path:** Tokio is used only for stdio framing; all document work (`docx-rs`, `umya-spreadsheet`/`calamine`, `lopdf`/`printpdf`, `quick-xml`/`zip`) is synchronous, allocation-conscious, and streams ZIP entries instead of buffering whole packages where possible.
+- **Fast cold start matters for MCP:** clients spawn the server per session. A 50 ms Rust cold start vs. seconds for `dotnet run` is the difference between an assistant that feels instant and one that times out on first tool call.
+- **Small bundle = cheap distribution:** the binary fits in a GitHub Release asset, a Docker `scratch` layer, or an MCP bundle without pulling a runtime image. No `dotnet` on PATH, no `NODE_EXTRA_CA_CERTS`, no framework roll-forward surprises.
+
+## Requirements
+
+- Stable Rust (1.75+, edition 2021). No .NET SDK required.
+- An MCP-compatible client (Claude Desktop, VS Code with Copilot, etc.)
 
 ## Building
 
 ```bash
-git clone https://github.com/your-org/OfficeMCP.git
-cd OfficeMCP
-dotnet build
+cd officemcp-rs
+cargo build --release
+# binary: ./target/release/officemcp-rs (officemcp-rs.exe on Windows)
+```
+
+Optional: verify the MCP handshake manually:
+
+```bash
+printf '%s\n%s\n' \
+  '{"jsonrpc":"2.0","id":1,"method":"initialize","params":{"protocolVersion":"2024-11-05"}}' \
+  '{"jsonrpc":"2.0","id":2,"method":"tools/list","params":{}}' \
+  | ./target/release/officemcp-rs
+# expect: initialize result + 44 tools
 ```
 
 ## Running
 
+The server speaks MCP over **stdio** (newline-delimited JSON-RPC, batch arrays supported).
+
 ```bash
-dotnet run --project OfficeMCP/OfficeMCP.csproj
+./target/release/officemcp-rs
 ```
-
-The server communicates over **stdio** using the MCP protocol.
-
-## MCP Client Configuration
 
 ### Claude Desktop
 
-Add the following to your `claude_desktop_config.json`:
-
 ```json
 {
   "mcpServers": {
-    "OfficeMCP": {
-      "command": "dotnet",
-      "args": [
-        "run",
-        "--project",
-        "C:/path/to/OfficeMCP/OfficeMCP/OfficeMCP.csproj"
-      ]
+    "OfficeMCP-Rust": {
+      "command": "C:/path/to/officemcp-rs/target/release/officemcp-rs.exe"
     }
   }
 }
 ```
 
-Or point to the compiled binary directly for faster startup:
+### VS Code (MCP config)
 
 ```json
 {
-  "mcpServers": {
-    "OfficeMCP": {
-      "command": "C:/path/to/OfficeMCP/OfficeMCP/bin/Release/net10.0/OfficeMCP.exe"
+  "servers": {
+    "OfficeMCP-Rust": {
+      "command": "C:/path/to/officemcp-rs/target/release/officemcp-rs.exe",
+      "transport": "stdio"
     }
   }
 }
 ```
 
-## Available Tools
+Logging goes to **stderr** (`tracing_subscriber`, `RUST_LOG` filter); stdout is reserved for protocol frames.
 
-### Consolidated Office Tools (format-agnostic)
+## Tools (44)
 
-These tools work across all supported formats and are organized into three tiers.
-
-#### Tier 1 — Core (always exposed)
+### Consolidated `office_*` (11)
 
 | Tool | Description |
 |------|-------------|
-| `office_create` | Create a new document in any supported format |
-| `office_read` | Read content from any document. For Word: returns an ordered content list with headings, paragraphs, tables, and inline images (base64) in reading order by default. Set `includeImages=false` for plain text only. |
-| `office_write` | Write or append content to a document |
-| `office_convert` | Convert between formats (e.g., `.docx` → `.md`) |
-| `office_metadata` | Retrieve document metadata (format, size, structure) |
+| `office_create` | Create `.docx` / `.xlsx` / `.pptx` / `.pdf` (format from extension) |
+| `office_read` | Read any format; Word returns ordered headings/paragraphs/tables/images + `TemplatePath` |
+| `office_write` | Append Markdown (Word/PDF), cells (Excel), text (PowerPoint) |
+| `office_convert` | Document → Markdown |
+| `office_metadata` | Format, size, structure |
+| `office_add_element` | Paragraph, heading, image, table, pageBreak, lists, shape, line |
+| `office_add_header_footer` | Headers/footers with page numbers + dates (Word/PDF) |
+| `office_extract` | Extract text / images (base64 + context) / tables / metadata |
+| `office_batch` | Multiple ops in one call |
+| `office_merge` | Merge PDFs |
+| `office_pdf_pages` | Extract pages, watermark, read single page |
 
-#### Tier 2 — Common
+### PowerPoint `pptx_*` (19)
 
-| Tool | Description |
-|------|-------------|
-| `office_add_element` | Add elements such as images, tables, and lists |
-| `office_add_header_footer` | Add headers and footers with optional page numbers and dates |
-| `office_extract` | Extract specific content: text, **images** (with base64 + context for AI OCR/captioning), tables, metadata |
-| `office_batch` | Execute multiple operations on a document in one call |
+`pptx_create`, `pptx_read`, `pptx_add_slide`, `pptx_manage_slide`, `pptx_add_title`, `pptx_add_text`, `pptx_add_image`, `pptx_add_table`, `pptx_add_shape` (100+ types), `pptx_add_line`, `pptx_add_connector`, `pptx_add_image_base64`, `pptx_z_order`, `pptx_reorder_shape`, `pptx_add_group`, `pptx_set_slide_size`, `pptx_set_background`, `pptx_add_notes`, `pptx_batch`
 
-#### Tier 3 — Advanced
+### Excel `excel_*` (8)
 
-| Tool | Description |
-|------|-------------|
-| `office_merge` | Merge multiple documents into one (PDF) |
-| `office_pdf_pages` | Extract pages, add watermarks, or read specific PDF pages |
+`excel_create`, `excel_read`, `excel_get_formatting`, `excel_set_cells`, `excel_formula`, `excel_manage_sheet`, `excel_format_cells`, `excel_batch`
 
----
+### Word `word_*` (6)
 
-### Word Tools (`word_*`)
+`word_read`, `word_add_content` (Markdown), `word_add_element`, `word_add_image`, `word_convert` (`word_to_md` / `md_to_word` / `word_to_md_file`), `word_batch`
 
-| Tool | Description |
-|------|-------------|
-| `word_read` | Read text from a Word document |
-| `word_add_content` | Append Markdown content to a Word document |
-| `word_add_element` | Add page breaks, headers, or footers |
-| `word_add_image` | Embed an image (supports JPEG, PNG, GIF, BMP, TIFF) |
-| `word_convert` | Convert between Word and Markdown |
-| `word_batch` | Perform multiple write operations in one call |
-
----
-
-### Excel Tools (`excel_*`)
-
-| Tool | Description |
-|------|-------------|
-| `excel_create` | Create a workbook with optional initial table data |
-| `excel_read` | Read content from a sheet, cell, or range |
-| `excel_get_formatting` | Retrieve cell formatting (colors, fonts, borders) |
-| `excel_set_cells` | Set cell values with optional table formatting |
-| `excel_formula` | Insert a formula into a cell |
-| `excel_manage_sheet` | Add, delete, or rename sheets |
-| `excel_format_cells` | Apply formatting to a cell range |
-| `excel_batch` | Perform multiple operations in one call |
-
----
-
-### PowerPoint Tools (`pptx_*`)
-
-| Tool | Description |
-|------|-------------|
-| `pptx_read` | Read text from slides |
-| `pptx_add_slide` | Add a new blank slide |
-| `pptx_manage_slide` | Delete, duplicate, or reorder slides |
-| `pptx_add_title` | Set a slide title and subtitle |
-| `pptx_add_text` | Add text or bullet points to a slide |
-| `pptx_add_image` | Embed an image on a slide (supports JPEG, PNG, GIF, BMP) |
-| `pptx_add_table` | Add a table to a slide |
-| `pptx_add_notes` | Add speaker notes to a slide |
-| `pptx_batch` | Perform multiple slide operations in one call |
-
-## Image Support
-
-### Creating documents with images
-
-Images can be embedded when creating or editing documents:
-
-| Format | How |
-|--------|-----|
-| Word | `word_add_image` tool, or inline Markdown `![alt](path)` via `office_create` / `office_write` |
-| PowerPoint | `pptx_add_image` tool |
-| Excel | `office_add_element` with `elementType: "image"` |
-
-### Reading documents with images
-
-#### Rich ordered reading (Word — default)
-
-Calling `office_read` on a `.docx` file returns the full document as an **ordered content list** where each item has a `Type` of `"heading"`, `"paragraph"`, `"table"`, or `"image"`. Images appear immediately after their containing paragraph so the preceding headings and paragraphs provide natural section context — no separate extraction step needed.
-
-```json
-{
-  "Content": [
-    { "Type": "heading",   "Text": "Q4 Financial Summary", "Level": 1 },
-    { "Type": "paragraph", "Text": "Revenue grew 23% as shown in the chart below." },
-    { "Type": "image",     "AltText": "Revenue chart", "MimeType": "image/png",
-                           "ImageBase64": "...", "WidthPx": 640, "HeightPx": 400 },
-    { "Type": "paragraph", "Text": "Figure 1: Q4 2025 revenue by region." },
-    { "Type": "heading",   "Text": "Cost Analysis", "Level": 2 }
-  ]
-}
-```
-
-Pass `includeImages: false` to get plain text only.
-
-#### Bulk image extraction
-
-`office_extract` with `extractType: "images"` extracts all embedded images from Word, PowerPoint, and PDF files. Each result includes:
-
-| Field | Description |
-|-------|-------------|
-| `ImageBase64` | Full base64-encoded image bytes for AI vision analysis |
-| `MimeType` | `image/png`, `image/jpeg`, etc. |
-| `AltText` | Alt text stored in the document |
-| `ContextBefore` | Paragraph immediately before the image (Word) or full slide text (PowerPoint) |
-| `ContextAfter` | Paragraph immediately after the image (Word) |
-| `WidthPx` / `HeightPx` | Dimensions at 96 dpi |
-| `PageOrSlideNumber` | Source page (PDF) or slide number (PowerPoint) |
-
----
-
-## Project Structure
+## Project structure
 
 ```
-OfficeMCP/
-├── Program.cs                          # MCP server entry point & DI setup
-├── Models/
-│   └── DocumentModels.cs               # Shared data models (formatting, layout, etc.)
-├── Services/
-│   ├── WordDocumentService.cs          # Word document logic
-│   ├── ExcelDocumentService.cs         # Excel workbook logic
-│   ├── PowerPointDocumentService.cs    # PowerPoint presentation logic
-│   ├── PdfDocumentService.cs           # PDF creation and manipulation
-│   ├── EncryptedDocumentService.cs     # Encrypted/protected document handling
-│   ├── FormatDetector.cs               # File extension → format detection
-│   └── MarkdownParser.cs               # Markdown → Office content conversion
-└── Tools/
-    ├── OfficeDocumentToolsConsolidated.cs  # Unified office_* MCP tools
-    ├── WordDocumentToolsOptimized.cs       # Word-specific word_* MCP tools
-    ├── ExcelDocumentToolsOptimized.cs      # Excel-specific excel_* MCP tools
-    └── PowerPointDocumentToolsOptimized.cs # PowerPoint-specific pptx_* MCP tools
+officemcp-rs/
+├── Cargo.toml            # deps + size-optimized release profile
+├── README.md             # this file
+├── .gitignore            # target/
+└── src/
+    ├── main.rs           # stdio JSON-RPC loop, initialize/tools/list/tools/call
+    ├── models.rs         # shared request/response models
+    ├── services/         # document logic (no MCP awareness)
+    │   ├── word.rs       # docx-rs based read/write/images/convert
+    │   ├── excel.rs      # umya-spreadsheet + calamine
+    │   ├── powerpoint.rs # raw OOXML via zip + quick-xml
+    │   ├── pdf.rs        # lopdf + printpdf
+    │   ├── markdown_parser.rs
+    │   ├── format_detector.rs
+    │   └── protection.rs # encrypted/protected file detection
+    └── tools/            # MCP tool handlers (thin dispatch)
+        ├── office.rs
+        ├── word.rs
+        ├── excel.rs
+        └── powerpoint.rs
 ```
 
-## Dependencies
+## Key dependencies
 
-| Package | Version | Purpose |
-|---------|---------|---------|
-| `ModelContextProtocol` | 1.0.0 | MCP server framework |
-| `DocumentFormat.OpenXml` | 3.4.1 | Word, Excel, PowerPoint manipulation |
-| `itext7` | 9.5.0 | PDF creation and manipulation |
-| `Azure.Identity` | 1.18.0 | Azure credential support |
-| `Microsoft.Extensions.Hosting` | 10.0.3 | Dependency injection and hosting |
-| `Newtonsoft.Json` | 13.0.4 | JSON serialization (transitive override) |
+| Crate | Purpose |
+|-------|---------|
+| `tokio` (full) | async stdio framing |
+| `rmcp` | MCP type inspiration (transport is hand-rolled stdio here) |
+| `serde` / `serde_json` / `schemars` | JSON + tool schemas |
+| `zip` / `quick-xml` | OOXML container + XML (docx/pptx/xlsx) |
+| `docx-rs` | Word document model |
+| `umya-spreadsheet` / `calamine` | Excel write / fast read |
+| `lopdf` / `printpdf` | PDF merge, pages, watermark, create |
+| `pulldown-cmark` | Markdown → Office content |
+| `image` / `base64` / `uuid` / `chrono` | images, embedding, ids, dates |
+| `anyhow` / `thiserror` / `tracing` | errors + stderr logging |
 
-## Running Tests
+See `Cargo.lock` (309 locked entries at time of writing) for the full tree.
 
-```bash
-dotnet test OfficeMCP.Tests/OfficeMCP.Tests.csproj
-```
+## Compatibility notes
+
+- Tool names and required parameters mirror the C# server so existing prompts and MCP configs keep working; point the client at the Rust binary instead of `dotnet run`.
+- `office_read` on `.docx` preserves the original's ordered content list (`heading` / `paragraph` / `table` / `image` with base64) and returns `TemplatePath` for style-preserving rewrites via `office_create`.
+- Encrypted/protected files are detected and reported (see `services/protection.rs`); full decryption parity with the .NET build is best-effort — check tool error messages for guidance.
+- Batch tools (`office_batch`, `word_batch`, `excel_batch`, `pptx_batch`) accept the same `operationsJson` shapes as the original.
 
 ## License
 
-This project is provided as-is. 
+MIT — same as the workspace. See `Cargo.toml` (`license = "MIT"`).
